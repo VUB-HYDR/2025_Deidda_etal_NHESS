@@ -1,0 +1,216 @@
+# -*- coding: utf-8 -*-
+"""
+Created on Thu Apr  4 15:40:27 2024
+
+@author: Cristina
+"""
+
+import xarray as xr
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import pickle as pk 
+import seaborn as sns
+import xarray as xr
+import pickle as pk
+import time
+from mpl_toolkits.axes_grid1 import make_axes_locatable
+import matplotlib as mpl
+import mapclassify as mc
+from copy import deepcopy as cp
+import os
+import matplotlib.pyplot as plt
+#import cartopy as cr
+#import cartopy.crs as ccrs
+import geopandas as gpd
+import seaborn as sns
+import rioxarray as rio
+
+scriptsdir = os.getcwd()
+
+
+#%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+
+global flags
+
+flags = {}
+flags['extr'] = 'burntarea' # 0: all
+                                # 1: burntarea
+                                # 3: driedarea
+                                # 4: floodedarea
+                                # 5: heatwavedarea
+                                # 6: tropicalcyclonedarea
+flags['gmt'] = 'ar6'        # original: use Wim's stylized trajectory approach with max trajectory a linear increase to 3.5 deg                               
+                            # ar6: substitute the linear max wth the highest IASA c7 scenario (increasing to ~4.0), new lower bound, and new 1.5, 2.0, NDC (2.8), 3.0
+flags['rm'] = 'rm'       # no_rm: no smoothing of RCP GMTs before mapping
+                          # rm: 21-year rolling mean on RCP GMTs 
+                          
+
+# Directory
+
+data_dir="C:/Users/Cristina/OneDrive - Vrije Universiteit Brussel/Documents/Project 2022/European Commission/Task 2/Code/lifetime_exposure_isimip-emergence"
+
+os.chdir(data_dir)
+              
+
+         
+########## Open data ##########
+with open('./data/pickles/{}/Transport_modes/0_Allmode_dataset_{}.pkl'.format(flags['extr'],flags['extr']),'rb') as f:
+    all_modes = pk.load(f)    
+
+with open('./data/pickles/{}/isimip_metadata_{}_{}_{}.pkl'.format(flags['extr'],flags['extr'],flags['gmt'],flags['rm']), 'rb') as f:
+    d_isimip_meta = pk.load(f)
+
+with open('./data/Mask_transport_modes/mode_mask.pkl','rb') as f:
+    mode_mask = pk.load(f)  
+    
+##########
+    
+tr_modes=['airports','ports','railways','roads','iww']
+
+# Information about the run: gcm and rcp
+
+sim_data = {}
+
+# Iterate through keys in d_isimip_meta
+for i in list(d_isimip_meta.keys()):
+    # Initialize an empty dictionary for each key in sim_data
+    sim_data[i] = {}
+    
+    # Populate the nested dictionary with values from d_isimip_meta
+    sim_data[i]['gcm'] = d_isimip_meta[i]['gcm']
+    sim_data[i]['rcp'] = d_isimip_meta[i]['rcp']
+    sim_data[i]['model'] = d_isimip_meta[i]['model']
+
+
+
+if flags['extr'] in ['floodedarea', 'tropicalcyclonedarea', 'burntarea']:
+    
+    #Selection threshold for defining the event
+    thr_sel=0.05
+        
+    #Substituting exposure variable to binary data
+    for trmode in tr_modes:
+        all_modes[trmode]['percentage'] = all_modes[trmode]['exposure'] 
+        all_modes[trmode]['exposure'] = xr.where( all_modes[trmode]['exposure'] >= thr_sel,
+        1,  xr.where(all_modes[trmode]['exposure'] < thr_sel, 0, np.nan))
+        
+
+
+start_y=1950
+
+typeplot='Abs'
+#typeplot='Perc'
+
+tr_names=['Airports', 'Ports', 'Railways', 'Roads', 'IWWs']
+
+# 28 or 35 years
+y_g=30
+
+plot_dir='./Final_results/Barplot/Review/'
+
+# Load mask trasport 
+
+#tr_mode_sel='railways'
+
+# Create a single figure with three subplots (1 row, 3 columns)
+fig, axes = plt.subplots(nrows=len(tr_modes), ncols=1, figsize=(8, 17))
+
+for i, mode_selected in enumerate(tr_modes):
+
+
+    M_dat=all_modes[mode_selected].exposure
+    
+    M_dat0=M_dat.sel(time=M_dat['time'] >= start_y)
+    
+    # Select mask
+    mask=mode_mask[mode_selected]
+    
+    # Convert 'run' to a NumPy array
+    run_array = np.array(M_dat0.run)
+    
+    # Convert run_info to a NumPy array
+    gcm_array = np.array([sim_data[ii]['gcm'] for ii in run_array])
+    rcp_array = np.array([sim_data[ii]['rcp'] for ii in run_array])
+    
+    # Add 'gcm' and 'rcp' as additional coordinates to the DataArray
+    M_dat0.coords['gcm'] = ('run', gcm_array)
+    M_dat0.coords['rcp'] = ('run', rcp_array)      
+    
+    # keys run
+    keys_rcp26 = [key for key, value in d_isimip_meta.items() if value['rcp'] == 'rcp26']
+    keys_rcp60 = [key for key, value in d_isimip_meta.items() if value['rcp'] == 'rcp60']
+    keys_rcp85 = [key for key, value in d_isimip_meta.items() if value['rcp'] == 'rcp85']    
+    
+     
+    #########%%%%%  Data with number of elements for pixels ######
+    
+    if typeplot == 'Abs':
+        M_mode= M_dat0*mask
+    elif typeplot == 'Perc':
+            M_mode= M_dat0*mask*100/mask.sum().values
+    
+    ########%%%##   Sum over pixels of tr mode in Europe ########
+    
+    M_dat= M_mode.sum(dim=['lat', 'lon'])
+        
+    # Selection of rcp scenario
+    Mdat26=M_dat.sel(run=keys_rcp26)
+    Mdat60=M_dat.sel(run=keys_rcp60)
+    Mdat85=M_dat.sel(run=keys_rcp85)
+    
+    # list of dataset
+    var =  Mdat60
+    
+    #########%% Plot 3 boxes for each RCP and confidence interval
+    
+    rcp_values='RCP 6.0'
+    # Calculate the maximum value of Mdat85
+    
+    max_value_85 = Mdat85.quantile(0.75, dim='run').max().values
+    
+    df = var.to_dataframe(name='value').reset_index()
+    # y_g=10
+     
+    # Calculate year group starting from the last year (2099)
+    last_year = df['time'].max()
+    df['year_group'] = 2100 - ((last_year - df['time']) // y_g).astype(int) * y_g
+    
+    # Assign a unique value to each group (e.g., the middle year of the group)
+    df['group_value'] = df['year_group'] - int(y_g/2)
+    
+    sns.barplot(x='group_value', y='value', data=df,  ax=axes[i], width=0.5, errorbar=('ci', 95)) 
+    #sns.boxplot(x='group_value', y='value', data=df, hue='group_value', sym="", notch=True, width=8, ax=axes[i], color='skyblue')
+    
+    # Remove the legend
+    #axes[i].legend().set_visible(False)
+    
+    # Set subplot title
+    axes[i].set_title(tr_names[i], fontsize=13)
+    axes[i].set_xlabel('')
+    
+    if typeplot == 'Abs':
+        axes[i].set_ylabel('Number of segments exposed', fontsize=12)  
+    elif typeplot == 'Perc':
+        axes[i].set_ylabel('Percentage of segments exposed [%]', fontsize=12)  
+            
+           
+    #axes[i].set_ylim(0,1)
+    axes[i].tick_params(axis='x', rotation=40)
+    
+    axes[i].spines['top'].set_visible(False)
+    axes[i].spines['right'].set_visible(False)
+ 
+              
+# Set the overall title for the figure
+#fig.suptitle('V1')
+
+# Adjust layout
+plt.tight_layout()
+#plt.show()
+#plt.savefig(plot_dir +"Barplot_"+flags['extr']+'_'+ typeplot + str(y_g)+ "y_"+str(start_y)+"_th"+str(round(thr_sel*100))+"perc95.png", dpi=900)
+
+
+
+#%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
